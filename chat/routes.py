@@ -26,102 +26,38 @@ red_expiry = 60 * 60 * 5 # 5 hours
 broadcast = Broadcast(f"redis://:{os.environ['REDIS_PASS']}@localhost:6379")
 
 async def startup_stuff():
-    await broadcast.connect()
+    # await broadcast.connect()
+    pass
 
 async def shutdown_stuff():
-    await broadcast.disconnect()
+    # await broadcast.disconnect()
+    pass
 
 class RoomChatWebsocket(WebSocketEndpoint):
     encoding = "json"
 
     async def on_connect(self, websocket: WebSocket):
         await websocket.accept()
+        await websocket.send_json({})
 
-        room_id = websocket.query_params['room_id']
-        websocket.room_id = room_id
+        async def sender():
+            while True:
+                await asyncio.sleep(1)
 
-        messages = red.lrange(f"room_chat_{room_id}", 0, -1)
+        async def on_message_received(websocket: WebSocket):
+            async for data in websocket.iter_json():
+                print("------------ got message", data)
 
-        if not messages:
-            red.expire(f"room_chat_{room_id}", red_expiry)
-
-        join_message = {
-            "user": {
-                
-                "room_id": room_id,
-                "is_system": 1
-            },
-            "message_data": {
-                "text": f"@ has joined the room!",
-            }
-        }
-        
-        red.lpush(f"room_chat_{room_id}", orjson.dumps(join_message).decode('utf-8'))
-
-        messages = red.lrange(f"room_chat_{room_id}", 0, 100)
-        data = [orjson.loads(message) for message in messages]
-        
-        # tell everyone someone joined
-        await broadcast.publish(channel=f"room_{room_id}", message=orjson.dumps(join_message).decode('utf-8'))
-
-        # send chat data to newly joined member
-        await websocket.send_json(data)
-
-        # handle subscriptions using anyio and broadcaster
         async with anyio.create_task_group() as task_group:
-            # Receiver Task
+
             async def receiver():
-                await self.on_message_received(websocket=websocket)
+                await on_message_received(websocket)
                 task_group.cancel_scope.cancel()
-            
+
             task_group.start_soon(receiver)
-            task_group.start_soon(self.sender, websocket)
+            task_group.start_soon(sender)
 
-    async def sender(self, websocket):
-        async with broadcast.subscribe(channel=f"room_{websocket.room_id}") as subscriber:
-            async for event in subscriber:
-                await websocket.send_json(orjson.loads(event.message))
-
-    async def on_message_received(self, websocket: WebSocket):
-        room_id = websocket.room_id
-
-        async for data in websocket.iter_json():
-
-            chat_data = {
-                "user": {
-                    
-                    "room_id": room_id,
-                    "is_system": 0
-                },
-                "message_data": {
-                    "text": data['text'],
-                }
-            }
-
-            chat_data = orjson.dumps(chat_data).decode('utf-8')
-            red.lpush(f"room_chat_{room_id}", chat_data)
-
-            # Publish the message to the broadcast channel
-            await broadcast.publish(channel=f"room_{room_id}", message=chat_data)
-        
     async def on_disconnect(self, websocket: WebSocket, close_code: int):
-        room_id = websocket.room_id
-
-        leave_message = {
-            "user": {
-                
-                "room_id": room_id,
-                "is_system": 1,
-            },
-            "message_data": {
-                "text": f"@ has left the room :(",
-            }
-            
-        }
-        red.lpush(f"room_chat_{room_id}", orjson.dumps(leave_message))
-
-        # Publish the leave message to the broadcast channel
-        await broadcast.publish(channel=f"room_{room_id}", message=orjson.dumps(leave_message).decode('utf-8'))
         print(f"Disconnected: {websocket}")
 
 # all the routes
